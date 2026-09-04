@@ -273,10 +273,15 @@
     text-decoration:underline;
     text-decoration-color:var(--hot);
   }
+  .chart-actions{
+    display:flex;
+    gap:8px;
+    margin-top:14px;
+  }
   .load-more{
+    flex:1;
     display:block;
     width:100%;
-    margin-top:14px;
     background:none;
     border:1px solid var(--hairline);
     color:var(--hot);
@@ -288,6 +293,13 @@
     cursor:pointer;
   }
   .load-more:active{ background:var(--hot-pale); }
+  .load-more.show-less{
+    color:var(--text-dim);
+    border-color:var(--hairline);
+    flex:0 0 auto;
+    padding-left:16px;
+    padding-right:16px;
+  }
   .legend{
     display:flex;
     gap:18px;
@@ -833,6 +845,21 @@ function renderChart(){
     });
   }
 
+  const actions = document.createElement('div');
+  actions.className = 'chart-actions';
+
+  if(weeksLoaded > 1){
+    const showLessBtn = document.createElement('button');
+    showLessBtn.type = 'button';
+    showLessBtn.className = 'load-more show-less';
+    showLessBtn.textContent = 'Show less';
+    showLessBtn.addEventListener('click', () => {
+      weeksLoaded--;
+      renderChart();
+    });
+    actions.appendChild(showLessBtn);
+  }
+
   const loadMoreBtn = document.createElement('button');
   loadMoreBtn.type = 'button';
   loadMoreBtn.className = 'load-more';
@@ -841,11 +868,12 @@ function renderChart(){
     weeksLoaded++;
     renderChart();
   });
+  actions.appendChild(loadMoreBtn);
 
   chartArea.innerHTML = '';
   chartArea.appendChild(scale);
   chartArea.appendChild(rows);
-  chartArea.appendChild(loadMoreBtn);
+  chartArea.appendChild(actions);
 }
 
 let expandedDays = null; // Set of date strings currently expanded; null = not yet initialized
