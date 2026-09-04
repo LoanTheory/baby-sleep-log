@@ -254,6 +254,40 @@
     font-size:12px;
     color:var(--text-dim);
   }
+  .week-label{
+    font-family:'Futura', 'Century Gothic', 'Karla', sans-serif;
+    font-weight:700;
+    font-size:12px;
+    text-transform:uppercase;
+    letter-spacing:0.04em;
+    color:var(--text-dim);
+    margin:18px 0 8px;
+  }
+  .week-label:first-child{ margin-top:0; }
+  .day-row.future .track,
+  .day-row.future .day-label,
+  .day-row.future .day-total{
+    opacity:0.45;
+  }
+  .day-row.today .day-label .dow{
+    text-decoration:underline;
+    text-decoration-color:var(--hot);
+  }
+  .load-more{
+    display:block;
+    width:100%;
+    margin-top:14px;
+    background:none;
+    border:1px solid var(--hairline);
+    color:var(--hot);
+    font-family:'Karla',sans-serif;
+    font-weight:600;
+    font-size:13px;
+    padding:10px;
+    border-radius:9px;
+    cursor:pointer;
+  }
+  .load-more:active{ background:var(--hot-pale); }
   .legend{
     display:flex;
     gap:18px;
@@ -274,6 +308,43 @@
   .loading{
     color:var(--text-dim);
     font-size:14px;
+  }
+
+  /* --- Trends --- */
+  .trend-grid{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:10px;
+  }
+  .trend-stat{
+    background:var(--panel-tint);
+    border:1px solid var(--hairline);
+    border-radius:10px;
+    padding:12px 14px;
+  }
+  .trend-label{
+    font-size:11px;
+    color:var(--text-dim);
+    text-transform:uppercase;
+    letter-spacing:0.03em;
+    margin-bottom:4px;
+  }
+  .trend-value{
+    font-family:'Futura', 'Century Gothic', 'Karla', sans-serif;
+    font-weight:700;
+    font-size:19px;
+    color:var(--hot);
+  }
+  .trend-delta{
+    font-size:11px;
+    color:var(--text-dim);
+    margin-top:2px;
+  }
+  .trend-note{
+    grid-column:1 / -1;
+    font-size:12px;
+    color:var(--text-dim);
+    margin-top:2px;
   }
 
   /* --- Session list --- */
@@ -407,6 +478,11 @@
     </div>
   </section>
 
+  <section>
+    <h2>Last 7 days</h2>
+    <div id="trends-area"><div class="loading">Loading…</div></div>
+  </section>
+
   <hr class="divider">
 
   <section>
@@ -441,6 +517,7 @@ const SEED_SESSIONS = [{"id": "seed-gvew6irh", "startISO": "2026-08-26T08:15:00"
 const $ = (id) => document.getElementById(id);
 const chartArea = $('chart-area');
 const listArea = $('list-area');
+const trendsArea = $('trends-area');
 const formMsg = $('form-msg');
 
 function pad(n){ return String(n).padStart(2,'0'); }
@@ -501,7 +578,7 @@ async function loadSessions(){
   }
   if(sessions.length === 0){
     sessions = SEED_SESSIONS.slice();
-    await saveSessions();
+    await saveState();
   }
   storageReady = true;
   render();
@@ -525,24 +602,21 @@ async function loadSessions(){
   });
 }
 
-async function saveSessions(){
+async function saveState(){
+  // Always write sessions + active together in one call, never separately.
+  // Two separate writes created a window where the other tab could read a
+  // half-updated document (new sessions, stale active flag) and think a
+  // finished sleep was still running.
   try{
-    await sessionsDocRef.set({ data: JSON.stringify(sessions), updatedAt: Date.now() }, {merge: true});
+    await sessionsDocRef.set({
+      data: JSON.stringify(sessions),
+      active: activeSession ? JSON.stringify(activeSession) : null,
+      updatedAt: Date.now()
+    }, {merge: true});
     return true;
   }catch(e){
     console.error(e);
     formMsg.textContent = "Couldn't save — check your connection and try again.";
-    return false;
-  }
-}
-
-async function saveActive(){
-  try{
-    await sessionsDocRef.set({ active: activeSession ? JSON.stringify(activeSession) : null }, {merge: true});
-    return true;
-  }catch(e){
-    console.error(e);
-    $('timer-status').textContent = "Couldn't save — check your connection and try again.";
     return false;
   }
 }
@@ -583,7 +657,7 @@ async function addManualSession(){
   btn.disabled = true;
   sessions.push({ id: makeId(), startISO, endISO });
   sessions.sort((a,b) => new Date(a.startISO) - new Date(b.startISO));
-  const ok = await saveSessions();
+  const ok = await saveState();
   btn.disabled = false;
   if(ok){
     render();
@@ -601,7 +675,7 @@ function resetManualForm(){
 
 async function deleteSession(id){
   sessions = sessions.filter(s => s.id !== id);
-  await saveSessions();
+  await saveState();
   render();
 }
 
@@ -611,7 +685,7 @@ async function startSleep(){
   const btn = $('timer-btn');
   btn.disabled = true;
   activeSession = { startISO: nowISO() };
-  await saveActive();
+  await saveState();
   btn.disabled = false;
   renderTimerUI();
 }
@@ -624,8 +698,7 @@ async function stopSleep(){
   sessions.push({ id: makeId(), startISO: activeSession.startISO, endISO });
   sessions.sort((a,b) => new Date(a.startISO) - new Date(b.startISO));
   activeSession = null;
-  await saveSessions();
-  await saveActive();
+  await saveState();
   btn.disabled = false;
   render();
   renderTimerUI();
@@ -653,14 +726,29 @@ function renderTimerUI(){
   }
 }
 
-function getAffectedDays(){
-  const days = new Set();
-  sessions.forEach(s => {
-    days.add(s.startISO.slice(0,10));
-    days.add(s.endISO.slice(0,10));
-  });
-  if(days.size === 0) days.add(todayStr());
-  return Array.from(days).sort().reverse(); // newest first
+let weeksLoaded = 1; // how many week blocks are currently shown in the chart
+
+function sundayOf(dateStr){
+  // Returns the YYYY-MM-DD of the Sunday starting that date's week.
+  const [y,m,d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m-1, d);
+  dt.setDate(dt.getDate() - dt.getDay()); // getDay(): 0 = Sunday
+  return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`;
+}
+
+function weekDates(weeksBack){
+  // The 7 date strings (Sunday..Saturday) for the week `weeksBack` weeks
+  // before the current week (0 = this week).
+  const thisSunday = sundayOf(todayStr());
+  const start = addDays(thisSunday, -7 * weeksBack);
+  const out = [];
+  for(let i=0;i<7;i++) out.push(addDays(start, i));
+  return out;
+}
+
+function fmtWeekRange(sundayStr){
+  const satStr = addDays(sundayStr, 6);
+  return `${fmtDateLabel(sundayStr).md} – ${fmtDateLabel(satStr).md}`;
 }
 
 function segmentsForDay(dateStr){
@@ -680,13 +768,48 @@ function segmentsForDay(dateStr){
   return segs;
 }
 
-function renderChart(){
-  const days = getAffectedDays();
-  if(sessions.length === 0){
-    chartArea.innerHTML = '<div class="empty">No sleep periods logged yet. Add the first one above.</div>';
-    return;
-  }
+function buildDayRow(dateStr){
+  const {dow, md} = fmtDateLabel(dateStr);
+  const segs = segmentsForDay(dateStr);
+  const totalMins = segs.reduce((sum,s) => sum + (s.endMin - s.startMin), 0);
+  const h = Math.floor(totalMins/60), m = Math.round(totalMins%60);
+  const isFuture = dateStr > todayStr();
+  const isToday = dateStr === todayStr();
 
+  const row = document.createElement('div');
+  row.className = 'day-row' + (isFuture ? ' future' : '') + (isToday ? ' today' : '');
+
+  const label = document.createElement('div');
+  label.className = 'day-label';
+  label.innerHTML = `<span class="dow">${dow}</span>${md}`;
+
+  const track = document.createElement('div');
+  track.className = 'track';
+  [6,12,18].forEach(hr => {
+    const tick = document.createElement('div');
+    tick.className = 'track-tick';
+    tick.style.left = (hr/24*100)+'%';
+    track.appendChild(tick);
+  });
+  segs.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'seg';
+    el.style.left = (s.startMin/1440*100)+'%';
+    el.style.width = ((s.endMin - s.startMin)/1440*100)+'%';
+    track.appendChild(el);
+  });
+
+  const total = document.createElement('div');
+  total.className = 'day-total';
+  total.textContent = totalMins > 0 ? `${h}h ${pad(m)}m` : '';
+
+  row.appendChild(label);
+  row.appendChild(track);
+  row.appendChild(total);
+  return row;
+}
+
+function renderChart(){
   const scale = document.createElement('div');
   scale.className = 'chart-scale';
   ['12am','6am','12pm','6pm','12am'].forEach(t => {
@@ -696,48 +819,33 @@ function renderChart(){
   });
 
   const rows = document.createElement('div');
-  days.forEach(dateStr => {
-    const {dow, md} = fmtDateLabel(dateStr);
-    const segs = segmentsForDay(dateStr);
-    const totalMins = segs.reduce((sum,s) => sum + (s.endMin - s.startMin), 0);
-    const h = Math.floor(totalMins/60), m = Math.round(totalMins%60);
 
-    const row = document.createElement('div');
-    row.className = 'day-row';
+  for(let w = 0; w < weeksLoaded; w++){
+    const dates = weekDates(w);
+    const weekLabel = document.createElement('div');
+    weekLabel.className = 'week-label';
+    weekLabel.textContent = (w === 0) ? 'This week' : fmtWeekRange(dates[0]);
+    rows.appendChild(weekLabel);
 
-    const label = document.createElement('div');
-    label.className = 'day-label';
-    label.innerHTML = `<span class="dow">${dow}</span>${md}`;
-
-    const track = document.createElement('div');
-    track.className = 'track';
-    [6,12,18].forEach(hr => {
-      const tick = document.createElement('div');
-      tick.className = 'track-tick';
-      tick.style.left = (hr/24*100)+'%';
-      track.appendChild(tick);
+    // Most recent day first within the week, so today sits near the top.
+    dates.slice().reverse().forEach(dateStr => {
+      rows.appendChild(buildDayRow(dateStr));
     });
-    segs.forEach(s => {
-      const el = document.createElement('div');
-      el.className = 'seg';
-      el.style.left = (s.startMin/1440*100)+'%';
-      el.style.width = ((s.endMin - s.startMin)/1440*100)+'%';
-      track.appendChild(el);
-    });
+  }
 
-    const total = document.createElement('div');
-    total.className = 'day-total';
-    total.textContent = totalMins > 0 ? `${h}h ${pad(m)}m` : '';
-
-    row.appendChild(label);
-    row.appendChild(track);
-    row.appendChild(total);
-    rows.appendChild(row);
+  const loadMoreBtn = document.createElement('button');
+  loadMoreBtn.type = 'button';
+  loadMoreBtn.className = 'load-more';
+  loadMoreBtn.textContent = 'Load previous week';
+  loadMoreBtn.addEventListener('click', () => {
+    weeksLoaded++;
+    renderChart();
   });
 
   chartArea.innerHTML = '';
   chartArea.appendChild(scale);
   chartArea.appendChild(rows);
+  chartArea.appendChild(loadMoreBtn);
 }
 
 let expandedDays = null; // Set of date strings currently expanded; null = not yet initialized
@@ -817,9 +925,101 @@ function renderList(){
   });
 }
 
+function dailyTotalMins(dateStr){
+  return segmentsForDay(dateStr).reduce((sum,s) => sum + (s.endMin - s.startMin), 0);
+}
+
+function sessionsStartingOn(dateStr){
+  return sessions.filter(s => s.startISO.slice(0,10) === dateStr);
+}
+
+function computeTrends(){
+  const today = todayStr();
+  const thisWindow = [];   // last 7 days including today
+  const prevWindow = [];   // the 7 days before that
+  for(let i=0;i<7;i++) thisWindow.push(addDays(today, -i));
+  for(let i=7;i<14;i++) prevWindow.push(addDays(today, -i));
+
+  const avgMins = (days) => {
+    const total = days.reduce((sum,d) => sum + dailyTotalMins(d), 0);
+    return total / days.length;
+  };
+
+  const thisAvg = avgMins(thisWindow);
+  const prevAvg = avgMins(prevWindow);
+  const deltaMins = Math.round(thisAvg - prevAvg);
+
+  const totalSessionsThis = thisWindow.reduce((sum,d) => sum + sessionsStartingOn(d).length, 0);
+  const avgSessionsPerDay = totalSessionsThis / 7;
+
+  // Longest single stretch that started within the last 7 days
+  let longest = null;
+  sessions.forEach(s => {
+    if(thisWindow.includes(s.startISO.slice(0,10))){
+      const dur = computeDuration(s.startISO, s.endISO);
+      if(!longest || dur.mins > longest.mins){
+        longest = { mins: dur.mins, text: dur.text, dateStr: s.startISO.slice(0,10) };
+      }
+    }
+  });
+
+  // Bedtime consistency: for each day, the session that runs overnight
+  // (starts that day, ends the next calendar day)
+  const bedtimes = [];
+  thisWindow.forEach(d => {
+    const overnight = sessionsStartingOn(d).find(s => s.endISO.slice(0,10) !== s.startISO.slice(0,10));
+    if(overnight){
+      const st = new Date(overnight.startISO);
+      bedtimes.push(st.getHours()*60 + st.getMinutes());
+    }
+  });
+  let bedtimeRange = null;
+  if(bedtimes.length >= 2){
+    const min = Math.min(...bedtimes), max = Math.max(...bedtimes);
+    bedtimeRange = `${fmtTime(Math.floor(min/60), min%60)} – ${fmtTime(Math.floor(max/60), max%60)}`;
+  }
+
+  return { thisAvg, deltaMins, avgSessionsPerDay, longest, bedtimeRange };
+}
+
+function renderTrends(){
+  const t = computeTrends();
+  const avgH = Math.floor(t.thisAvg/60), avgM = Math.round(t.thisAvg%60);
+  const deltaAbs = Math.abs(t.deltaMins);
+  const deltaText = t.deltaMins === 0
+    ? 'same as the previous week'
+    : `${t.deltaMins > 0 ? '▲' : '▼'} ${Math.floor(deltaAbs/60)}h ${pad(deltaAbs%60)}m vs previous week`;
+
+  trendsArea.innerHTML = `
+    <div class="trend-grid">
+      <div class="trend-stat">
+        <div class="trend-label">Avg sleep / day</div>
+        <div class="trend-value">${avgH}h ${pad(avgM)}m</div>
+        <div class="trend-delta">${deltaText}</div>
+      </div>
+      <div class="trend-stat">
+        <div class="trend-label">Avg sleep periods / day</div>
+        <div class="trend-value">${t.avgSessionsPerDay.toFixed(1)}</div>
+        <div class="trend-delta">including overnight sleep</div>
+      </div>
+      <div class="trend-stat">
+        <div class="trend-label">Longest stretch</div>
+        <div class="trend-value">${t.longest ? t.longest.text : '—'}</div>
+        <div class="trend-delta">${t.longest ? fmtDateLabel(t.longest.dateStr).dow + ' ' + fmtDateLabel(t.longest.dateStr).md : 'not enough data yet'}</div>
+      </div>
+      <div class="trend-stat">
+        <div class="trend-label">Bedtime range</div>
+        <div class="trend-value">${t.bedtimeRange ? t.bedtimeRange : '—'}</div>
+        <div class="trend-delta">${t.bedtimeRange ? 'earliest – latest this week' : 'not enough data yet'}</div>
+      </div>
+    </div>
+  `;
+}
+
 function render(){
   renderChart();
   renderList();
+  renderTrends();
 }
 
 $('timer-btn').addEventListener('click', () => {
